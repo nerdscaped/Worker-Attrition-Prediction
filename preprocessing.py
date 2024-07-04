@@ -9,13 +9,16 @@ from sklearn.preprocessing import QuantileTransformer, StandardScaler
 from scipy import stats
 from scipy.stats import chi2_contingency
 from imblearn.combine import SMOTEENN
-from imblearn.over_sampling import SMOTE, ADASYN, SVMSMOTE
-from imblearn.under_sampling import ClusterCentroids, AllKNN, RandomUnderSampler, CondensedNearestNeighbour
-from imblearn.ensemble import EasyEnsembleClassifier, BalancedBaggingClassifier, RUSBoostClassifier, BalancedRandomForestClassifier
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import AllKNN, RandomUnderSampler
 from xgboost import XGBClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import balanced_accuracy_score, recall_score, mean_squared_error, roc_auc_score, accuracy_score, confusion_matrix, ConfusionMatrixDisplay 
+from sklearn.metrics import balanced_accuracy_score, recall_score, mean_squared_error, roc_auc_score, precision_score, confusion_matrix, ConfusionMatrixDisplay 
 from sklearn.feature_selection import RFE, chi2
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
 
 train = pd.read_csv('train.csv')
 test = pd.read_csv('test.csv')
@@ -309,17 +312,7 @@ X_test = pd.concat([X_test_binary, X_test_continuous_for_scaler, X_test_continuo
 
 resamplers = ['SMOTEENN', 'SMOTE', 'AllKNN', 'RandomUnderSampler']
 
-roc_auc = []
-mse = []
-recall = []
-
-for r in resamplers:
-    print(f'\nTesting Resampler {r}')
-
-    X_resampled, y_resampled = eval(r + "()").fit_resample(X_train, y_train)
-    X_testing, X_review, y_testing, y_review = train_test_split(X_resampled, y_resampled, test_size=0.001, random_state=0)
-    
-    model = XGBClassifier(n_estimators=1000,
+models = [XGBClassifier(n_estimators=1000,
                             max_depth=6,
                             learning_rate=0.01,
                             subsample=0.8,
@@ -329,26 +322,85 @@ for r in resamplers:
                             reg_lambda=1,
                             scale_pos_weight=1,
                             objective='binary:logistic',
-                            eval_metric='logloss')
-    model.fit(X_testing, y_testing)
+                            eval_metric='logloss'),
+        LogisticRegression(random_state=0),
+        DecisionTreeClassifier(random_state=0,
+                               criterion='log_loss',
+                               max_depth=6),
+        KNeighborsClassifier()#, 
+        # SVC()
+        ]
 
-    predictions = model.predict(X_test)
+roc_auc = []
+mse = []
+recall = []
+precision = []
+accuracy = []
+resampler = []
+model = []
 
-    print('roc_auc_score: ', roc_auc_score(y_test, predictions))
-    print('mean_squared_error: ', mean_squared_error(y_test, predictions))
-    print('recall_score: ', recall_score(y_test, predictions))
+for m in models:
+    print(f"\nTesting Model '{m}'")
+    for r in resamplers:
+        print(f'\nTesting Resampler {r}')
 
-    roc_auc.append(roc_auc_score(y_test, predictions))
-    mse.append(mean_squared_error(y_test, predictions))
-    recall.append(recall_score(y_test, predictions))
+        resampler.append(r)
+        model.append(f"{m}"[:3])
 
-    disp = ConfusionMatrixDisplay(confusion_matrix(y_test, predictions))
-    disp.plot()
-    plt.savefig(f'Confusion Matrix - {r} Sampler.png')
-    plt.clf()
+        X_resampled, y_resampled = eval(r + "()").fit_resample(X_train, y_train)
+        X_testing, X_review, y_testing, y_review = train_test_split(X_resampled, y_resampled, test_size=0.001, random_state=0)
 
-results = {'resampler': resamplers, 'roc_auc': roc_auc, 'mse': mse, 'recall': recall}
+        m.fit(X_testing, y_testing)
+        predictions = m.predict(X_test)
+
+        if f"{m}"[:3] == 'XGB':
+            roc_auc.append(roc_auc_score(y_test, predictions))
+            mse.append(mean_squared_error(y_test, predictions))
+            recall.append(recall_score(y_test, predictions))
+            precision.append(precision_score(y_test, predictions))
+            accuracy.append(balanced_accuracy_score(y_test, predictions))
+        else:
+            predictions = [int(b) for b in predictions]
+
+            roc_auc.append(roc_auc_score(y_test, predictions))
+            mse.append(mean_squared_error(y_test, predictions))
+            recall.append(recall_score(y_test, predictions))
+            precision.append(precision_score(y_test, predictions))
+            accuracy.append(balanced_accuracy_score(y_test, predictions))
+            # print('roc_auc_score: ', roc_auc_score(y_test, predictions))
+            # print('mean_squared_error: ', mean_squared_error(y_test, predictions))
+            # print('recall_score: ', recall_score(y_test, predictions))
+
+        disp = ConfusionMatrixDisplay(confusion_matrix(y_test, predictions))
+        disp.plot()
+        mod = f"{m}"[:3]
+        plt.savefig(f'{mod} Confusion Matrix - {r} Sampler.png')
+        plt.clf()
+
+results = {'resampler': resampler, 'model': model, 'roc_auc': roc_auc, 'mse': mse, 'recall': recall,
+           'precision': precision, 'balanced accuracy': accuracy}
 
 results = pd.DataFrame.from_dict(results)
 results.to_csv('results.csv', index=False)  
 
+
+# Notes - From Kaggle 
+# train["Edu_level"] = train["Education Level"].apply(lambda x: 1 if x == "High School" else 
+#                                                 2 if x == "Associate Degree" else
+#                                                3 if x == "Bachelor’s Degree" else
+#                                                4 if x == "Master’s Degree" else
+#                                                5 if x == "PhD" else -1)
+
+# ordinal_mappings = {
+#     'Work-Life Balance': {'Poor': 1, 'Fair': 2, 'Good': 3, 'Excellent': 4},
+#     'Job Satisfaction': {'Low': 1, 'Medium': 2, 'High': 3, 'Very High': 4},
+#     'Performance Rating': {'Low': 1, 'Below Average': 2, 'Average': 3, 'High': 4},
+#     'Education Level': {'High School': 1, 'Associate Degree': 2, 'Bachelor’s Degree': 3, 'Master’s Degree': 4, 'PhD': 5},
+#     'Job Level': {'Entry': 1, 'Mid': 2, 'Senior': 3},
+#     'Company Reputation': {'Poor': 1, 'Fair': 2, 'Good': 3, 'Excellent': 4},
+#     'Employee Recognition': {'Low': 1, 'Medium': 2, 'High': 3, 'Very High': 4},
+#     'Company Size' : {'Small': 1, 'Medium': 2, 'Large': 3}
+# }
+
+# for col, mapping in ordinal_mappings.items():
+#     emp_data[col] = emp_data[col].map(mapping)
